@@ -1,74 +1,73 @@
-from datetime import datetime
-import requests
+import datetime
+
+from gql.transport.requests import RequestsHTTPTransport
+from gql import gql, Client
+
 
 def log_crm_heartbeat():
-    """
-    Logs a heartbeat message every 5 minutes to confirm CRM is alive.
-    Optionally checks the GraphQL hello field.
-    """
-    # Prepare log entry
-    timestamp = datetime.now().strftime("%d/%m/%Y-%H:%M:%S")
-    message = f"{timestamp} CRM is alive"
+    # Log timestamp
+    timestamp = datetime.datetime.now().strftime("%d/%m/%Y-%H:%M:%S")
+    log_message = f"{timestamp} CRM is alive\n"
 
-    # Optional: Verify GraphQL endpoint
+    with open("/tmp/crm_heartbeat_log.txt", "a") as f:
+        f.write(log_message)
+
+    # Optional GraphQL check
     try:
-        response = requests.post(
-            "http://localhost:8000/graphql",
-            json={"query": "{ hello }"},
-            timeout=5
+        transport = RequestsHTTPTransport(
+            url="http://localhost:8000/graphql",
+            verify=False,
+            retries=3,
         )
-        if response.status_code == 200:
-            message += " - GraphQL OK"
-        else:
-            message += f" - GraphQL ERR ({response.status_code})"
+
+        client = Client(transport=transport, fetch_schema_from_transport=False)
+
+        query = gql("""
+        {
+            hello
+        }
+        """)
+
+        result = client.execute(query)
+        print("GraphQL Response:", result)
+
     except Exception as e:
-        message += f" - GraphQL ERROR: {e}"
-
-    # Append to log file
-    with open("/tmp/crm_heartbeat_log.txt", "a") as log_file:
-        log_file.write(message + "\n")
-
+        print("GraphQL Error:", str(e))
 
 def update_low_stock():
-    """
-    Runs every 12 hours to trigger the GraphQL mutation
-    and log updated products to /tmp/low_stock_updates_log.txt
-    """
-    timestamp = datetime.now().strftime("%d/%m/%Y-%H:%M:%S")
-    log_path = "/tmp/low_stock_updates_log.txt"
+    timestamp = datetime.datetime.now().strftime("%d/%m/%Y-%H:%M:%S")
 
-    mutation = """
-    mutation {
-        updateLowStockProducts {
-            success
-            message
-            updatedProducts {
-                name
-                stock
+    # Prepare GraphQL mutation
+    mutation = gql("""
+        mutation {
+            updateLowStockProducts {
+                message
+                updatedProducts
             }
         }
-    }
-    """
+    """)
 
     try:
-        response = requests.post(
-            "http://localhost:8000/graphql",
-            json={"query": mutation},
-            timeout=10
+        transport = RequestsHTTPTransport(
+            url="http://localhost:8000/graphql",
+            verify=False,
+            retries=3,
         )
-        data = response.json()
+        client = Client(transport=transport, fetch_schema_from_transport=False)
 
-        if "data" in data and data["data"]["updateLowStockProducts"]["success"]:
-            message = f"[{timestamp}] {data['data']['updateLowStockProducts']['message']}\n"
-            for p in data["data"]["updateLowStockProducts"]["updatedProducts"]:
-                message += f" - {p['name']}: new stock {p['stock']}\n"
-        else:
-            message = f"[{timestamp}] Failed to update or no low-stock products.\n"
+        result = client.execute(mutation)
+
+        updated_list = result["updateLowStockProducts"]["updatedProducts"]
+
+        # Log output
+        with open("/tmp/low_stock_updates_log.txt", "a") as f:
+            f.write(f"{timestamp} - Updated Products:\n")
+            for item in updated_list:
+                f.write(f" - {item}\n")
+
+        print("Low stock update processed!")
 
     except Exception as e:
-        message = f"[{timestamp}] ERROR: {e}\n"
-
-    with open(log_path, "a") as f:
-        f.write(message + "\n")
-
-        
+        with open("/tmp/low_stock_updates_log.txt", "a") as f:
+            f.write(f"{timestamp} - Error: {str(e)}\n")
+        print("Error updating low stock:", str(e))
